@@ -1,0 +1,11 @@
+[package]
+name = "hulu_sami"
+version = "0.1.0"
+authors = ["Musee Ullah <lae@lae.is>"]
+
+[dependencies]
+rustc-serialize = '*'
+lazy_static = '*'
+xml-rs = '*'
+rust-crypto = { git = "https://github.com/andreasots/rust-crypto.git", branch = "volatile-asm" }
+encoding = '*'
