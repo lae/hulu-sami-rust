@@ -88,7 +88,7 @@ fn main() {
     match result {
         Ok((filename, mut parser)) => write_lines(&filename, &collect_lines(&mut parser)).unwrap(),
         Err(err) => {
-            println!("Failed to read {}: {:?}", path, err);
+            println!("Failed to read {}: {}", path, err);
             process::exit(1);
         }
     }
