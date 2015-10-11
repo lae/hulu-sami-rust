@@ -47,21 +47,16 @@ fn main() {
         println!("{} [xml file (local or http)]", &args[0]);
         process::exit(64);
     }
-    let hulu_xml = args[1].to_string();
+    let hulu_xml = &args[1];
     if hulu_xml.starts_with("http://") || hulu_xml.starts_with("https://") {
-        let filename = match Url::parse(&hulu_xml) {
+        let filename = match Url::parse(hulu_xml) {
             Ok(url) => {
-                match url.path() {
-                    Some(path) => {
-                        let last_item = (*path).last().unwrap();
-                        if last_item == "" {
-                            "whatever.srt".to_owned()
-                        } else {
-                            last_item.to_owned() + ".srt"
-                        }
-                    }
-                    None => "whatever.srt".to_owned()
-                }
+                url.path()
+                .and_then(|path| path.last())
+                .map_or(
+                    "whatever.srt".into(),
+                    |last| format!("{}.srt", last)
+                )
             }
             Err(err) => {
                 println!("Couldn't parse URL: {:?}", err);
@@ -69,13 +64,13 @@ fn main() {
             }
         };
         let client = Client::new();
-        let mut res = client.get(&hulu_xml).header(Connection::close()).send().unwrap();
+        let mut res = client.get(hulu_xml).header(Connection::close()).send().unwrap();
         let mut body = String::new();
         res.read_to_string(&mut body).unwrap();
         let mut parser = EventReader::from_str(&body);
         write_lines(filename, collect_lines(&mut parser));
     } else {
-        let file = match File::open(&hulu_xml) {
+        let file = match File::open(hulu_xml) {
             Ok(file) => BufReader::new(file),
             Err(err) => {
                 println!("Failed to open {}: {}", hulu_xml, err.to_string());
@@ -84,7 +79,7 @@ fn main() {
         };
         let hulu_srt = match hulu_xml.ends_with(".xml") {
             true => hulu_xml.replace(".xml", ".srt"),
-            false => hulu_xml + ".srt"
+            false => format!("{}.srt", hulu_xml)
         };
         let mut parser = EventReader::new(file);
         write_lines(hulu_srt, collect_lines(&mut parser));
