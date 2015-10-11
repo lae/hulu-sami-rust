@@ -1,7 +1,35 @@
-use crypto::{ symmetriccipher, buffer, aes, blockmodes };
+use std::fmt;
+use std::error::Error;
+
+use crypto::{ buffer, aes, blockmodes };
+use crypto::symmetriccipher::SymmetricCipherError;
 use crypto::buffer::{ ReadBuffer, WriteBuffer, BufferResult };
 
-pub fn decrypt256(encrypted_data: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, symmetriccipher::SymmetricCipherError> {
+#[derive(Debug)]
+pub struct DecryptError(SymmetricCipherError);
+
+impl Error for DecryptError {
+    fn description(&self) -> &'static str {
+        match self.0 {
+            SymmetricCipherError::InvalidLength => "Decrypt error: invalid length",
+            SymmetricCipherError::InvalidPadding => "Decrypt error: invalid padding"
+        }
+    }
+}
+
+impl fmt::Display for DecryptError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+impl From<SymmetricCipherError> for DecryptError {
+    fn from(err: SymmetricCipherError) -> DecryptError {
+        DecryptError(err)
+    }
+}
+
+pub fn decrypt256(encrypted_data: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, DecryptError> {
     let mut decryptor = aes::cbc_decryptor(
             aes::KeySize::KeySize256,
             key,

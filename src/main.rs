@@ -7,10 +7,11 @@ extern crate encoding;
 extern crate hyper;
 extern crate url;
 
+use std::error::Error;
 use std::env;
 use std::process;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write, Cursor};
 
 use xml::reader::{EventReader, XmlEvent};
 use serialize::hex::FromHex;
@@ -41,127 +42,146 @@ struct SubtitleLine {
     text: String
 }
 
+fn parser_from_http(url: &str) -> Result<(String, EventReader<Box<Read>>), Box<Error>> {
+    let filename =
+        try!(Url::parse(url))
+        .path()
+        .and_then(|path| path.last())
+        .map_or(
+            "whatever.srt".into(),
+            |last| format!("{}.srt", last)
+        );
+
+    let mut res = try!(Client::new().get(url).header(Connection::close()).send());
+    let mut body = Vec::new();
+
+    try!(res.read_to_end(&mut body));
+
+    Ok((filename, EventReader::new(Box::new(Cursor::new(body)))))
+}
+
+fn parser_from_file(path: &str) -> Result<(String, EventReader<Box<Read>>), Box<Error>> {
+    let file = try!(File::open(path));
+    let filename = if path.ends_with(".xml") {
+        path.replace(".xml", ".srt")
+    } else {
+        format!("{}.srt", path)
+    };
+
+    Ok((filename, EventReader::new(Box::new(BufReader::new(file)))))
+}
+
 fn main() {
     let args = env::args().collect::<Vec<String>>();
     if args.len() != 2 {
         println!("{} [xml file (local or http)]", &args[0]);
         process::exit(64);
     }
-    let hulu_xml = args[1].to_string();
-    if hulu_xml.starts_with("http://") || hulu_xml.starts_with("https://") {
-        let filename = match Url::parse(&hulu_xml) {
-            Ok(url) => {
-                match url.path() {
-                    Some(path) => {
-                        let last_item = (*path).last().unwrap();
-                        if last_item == "" {
-                            "whatever.srt".to_owned()
-                        } else {
-                            last_item.to_owned() + ".srt"
-                        }
-                    }
-                    None => "whatever.srt".to_owned()
-                }
-            }
-            Err(err) => {
-                println!("Couldn't parse URL: {:?}", err);
-                process::exit(1);
-            }
-        };
-        let client = Client::new();
-        let mut res = client.get(&hulu_xml).header(Connection::close()).send().unwrap();
-        let mut body = String::new();
-        res.read_to_string(&mut body).unwrap();
-        let mut parser = EventReader::from_str(&body);
-        write_lines(filename, collect_lines(&mut parser));
+
+    let path = &args[1];
+    let result = if path.starts_with("http://") || path.starts_with("https://") {
+        parser_from_http(path)
     } else {
-        let file = match File::open(&hulu_xml) {
-            Ok(file) => BufReader::new(file),
-            Err(err) => {
-                println!("Failed to open {}: {}", hulu_xml, err.to_string());
-                process::exit(1);
-            }
-        };
-        let hulu_srt = match hulu_xml.ends_with(".xml") {
-            true => hulu_xml.replace(".xml", ".srt"),
-            false => hulu_xml + ".srt"
-        };
-        let mut parser = EventReader::new(file);
-        write_lines(hulu_srt, collect_lines(&mut parser));
+        parser_from_file(path)
+    };
+
+    match result {
+        Ok((filename, mut parser)) => write_lines(&filename, &collect_lines(&mut parser)).unwrap(),
+        Err(err) => {
+            println!("Failed to read {}: {}", path, err);
+            process::exit(1);
+        }
     }
 }
 
-fn write_lines(filename: String, lines: Vec<SubtitleLine>) {
-    let mut output_file = match File::create(&filename) {
-        Ok(file) => BufWriter::new(file),
-        Err(err) => {
-            println!("Failed to open {} for writing: {}", filename, err.to_string());
-            process::exit(1);
-        }
-    };
+fn write_lines(filename: &str, lines: &[SubtitleLine]) -> Result<(), Box<Error>> {
+    let output_file = try!(File::create(filename));
+    let mut output_file = BufWriter::new(output_file);
+
     println!("Writing SRT to {}", filename);
+
     for (i, line) in lines.iter().enumerate() {
-        let srt_line = format!("{}\n{} --> {}\n{}\n\n",
-                                i+1,
-                                srtime(line.start),
-                                srtime(line.end),
-                                line.text);
-        output_file.write(srt_line.as_bytes()).unwrap();
+        let srt_line = format!(
+            "{}\n{} --> {}\n{}\n\n",
+            i + 1,
+            srtime(line.start),
+            srtime(line.end),
+            line.text
+        );
+        try!(output_file.write(srt_line.as_bytes()));
     }
-    output_file.flush().unwrap();
+
+    try!(output_file.flush());
+    Ok(()) // whatever
+}
+
+fn process_text(text: &str) -> Result<String, Box<Error>> {
+    let encrypted_string = try!(text.from_hex());
+    let value = try!(cryptaes::decrypt256(&encrypted_string, &*SYNC_KEY, SYNC_IV));
+    let decrypted_string = try!(std::str::from_utf8(&value));
+
+    let encoded_string = WINDOWS_1252.encode(&decrypted_string, EncoderTrap::Ignore).unwrap_or(Vec::new());
+    let decoded_string = try!(std::str::from_utf8(&encoded_string));
+
+    Ok(decoded_string.replace("<P>","").replace("</P>","").replace("<BR/>", "\n"))
 }
 
 fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
-    //let mut parser = EventReader::new(reader);
-    let mut lines: Vec<SubtitleLine> = vec![];
+    let mut lines = Vec::<SubtitleLine>::new();
+
+    #[derive(Default, Debug)]
+    struct State {
+        in_sync: bool,
+        start: Option<usize>,
+        text: Option<String>
+    }
+
+    let mut parse_state: State = Default::default();
+
     while let Ok(event) = parser.next() {
         match event {
             XmlEvent::StartElement { name, attributes, .. } => {
                 if name.local_name == "SYNC" {
-                    let mut line = SubtitleLine { start: 0, end: 0, text: String::new() };
+                    parse_state.in_sync = true;
+
                     for attribute in attributes {
                         if attribute.name.local_name == "start" {
-                            line.start = match attribute.value.parse() {
-                                Ok(time) => time,
-                                Err(_) => 0
-                            }
-                        }
-                    }
-                    while let Ok(sync_event) = parser.next() {
-                        match sync_event {
-                            XmlEvent::EndElement { .. } => {
-                                if lines.len() > 0 {
-                                    let mut last_line: &mut SubtitleLine = match lines.last_mut() {
-                                        Some(l) => l,
-                                        None => break
-                                    };
-                                    if last_line.end == 0 {
-                                        last_line.end = line.start;
-                                    }
-                                }
-                                if line.text != "" {
-                                    lines.push(line)
-                                } 
-                                break
-                            }
-                            XmlEvent::Characters(content) => {
-                                let encrypted_string = content.from_hex().unwrap();
-                                let value = cryptaes::decrypt256(&encrypted_string, &*SYNC_KEY, SYNC_IV).unwrap();
-                                let decrypted_string = std::str::from_utf8(&value).unwrap();
-                                let encoded_string = WINDOWS_1252.encode(&decrypted_string, EncoderTrap::Ignore).unwrap();
-                                let decoded_string = std::str::from_utf8(&encoded_string).unwrap();
-                                let cleaned_string = decoded_string.replace("<P>","").replace("</P>","").replace("<BR/>", "\n");
-                                line.text = cleaned_string.to_owned();
-                            }
-                            _ => break
+                            parse_state.start = attribute.value.parse().ok();
+                            break;
                         }
                     }
                 }
+            },
+
+            XmlEvent::Characters(content) => {
+                if let Ok(text) = process_text(&content) {
+                    if text != "" {
+                        parse_state.text = Some(text)
+                    }
+                }
             }
+
+            XmlEvent::EndElement { .. } => {
+                if let State { in_sync: true, start: Some(start), text } = parse_state {
+                    if let Some(line) = lines.last_mut() {
+                        if line.end == 0 {
+                            line.end = start
+                        }
+                    };
+
+                    if let Some(text) = text {
+                        lines.push(SubtitleLine { start: start, end: 0, text: text });
+                    }
+                }
+
+                parse_state = Default::default();
+            },
+
             XmlEvent::EndDocument => break,
-            _ => { }
+            _ => ()
         }
     }
+
     lines
 }
 
