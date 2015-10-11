@@ -169,8 +169,8 @@ fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
                         }
                     };
 
-                    if text.is_some() {
-                        lines.push(SubtitleLine { start: start, end: 0, text: text.unwrap() });
+                    if let Some(text) = text {
+                        lines.push(SubtitleLine { start: start, end: 0, text: text });
                     }
                 }
 
