@@ -4,6 +4,8 @@ extern crate xml;
 extern crate lazy_static;
 extern crate crypto;
 extern crate encoding;
+extern crate hyper;
+extern crate url;
 
 use std::env;
 use std::process;
@@ -14,6 +16,9 @@ use xml::reader::{EventReader, XmlEvent};
 use serialize::hex::FromHex;
 use encoding::{Encoding, EncoderTrap};
 use encoding::all::WINDOWS_1252;
+use hyper::Client;
+use hyper::header::Connection;
+use url::Url;
 
 mod cryptaes;
 
@@ -44,7 +49,31 @@ fn main() {
     }
     let hulu_xml = args[1].to_string();
     if hulu_xml.starts_with("http://") || hulu_xml.starts_with("https://") {
-        println!("http not supported yet");
+        let filename = match Url::parse(&hulu_xml) {
+            Ok(url) => {
+                match url.path() {
+                    Some(path) => {
+                        let last_item = (*path).last().unwrap();
+                        if last_item == "" {
+                            "whatever.srt".to_owned()
+                        } else {
+                            last_item.to_owned() + ".srt"
+                        }
+                    }
+                    None => "whatever.srt".to_owned()
+                }
+            }
+            Err(err) => {
+                println!("Couldn't parse URL: {:?}", err);
+                process::exit(1);
+            }
+        };
+        let client = Client::new();
+        let mut res = client.get(&hulu_xml).header(Connection::close()).send().unwrap();
+        let mut body = String::new();
+        res.read_to_string(&mut body).unwrap();
+        let mut parser = EventReader::from_str(&body);
+        write_lines(filename, collect_lines(&mut parser));
     } else {
         let file = match File::open(&hulu_xml) {
             Ok(file) => BufReader::new(file),
@@ -57,27 +86,33 @@ fn main() {
             true => hulu_xml.replace(".xml", ".srt"),
             false => hulu_xml + ".srt"
         };
-        let mut output_file = match File::create(&hulu_srt) {
-            Ok(file) => BufWriter::new(file),
-            Err(err) => {
-                println!("Failed to open {} for writing: {}", hulu_srt, err.to_string());
-                process::exit(1);
-            }
-        };
-        for (i, line) in collect_lines(file).iter().enumerate() {
-            let srt_line = format!("{}\n{} --> {}\n{}\n\n",
-                                    i+1,
-                                    srtime(line.start),
-                                    srtime(line.end),
-                                    line.text);
-            output_file.write(srt_line.as_bytes()).unwrap();
-        }
-        output_file.flush().unwrap();
+        let mut parser = EventReader::new(file);
+        write_lines(hulu_srt, collect_lines(&mut parser));
     }
 }
 
-fn collect_lines<T: Read>(reader: T) -> Vec<SubtitleLine> {
-    let mut parser = EventReader::new(reader);
+fn write_lines(filename: String, lines: Vec<SubtitleLine>) {
+    let mut output_file = match File::create(&filename) {
+        Ok(file) => BufWriter::new(file),
+        Err(err) => {
+            println!("Failed to open {} for writing: {}", filename, err.to_string());
+            process::exit(1);
+        }
+    };
+    println!("Writing SRT to {}", filename);
+    for (i, line) in lines.iter().enumerate() {
+        let srt_line = format!("{}\n{} --> {}\n{}\n\n",
+                                i+1,
+                                srtime(line.start),
+                                srtime(line.end),
+                                line.text);
+        output_file.write(srt_line.as_bytes()).unwrap();
+    }
+    output_file.flush().unwrap();
+}
+
+fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
+    //let mut parser = EventReader::new(reader);
     let mut lines: Vec<SubtitleLine> = vec![];
     while let Ok(event) = parser.next() {
         match event {
