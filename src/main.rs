@@ -2,7 +2,7 @@ extern crate rustc_serialize as serialize;
 extern crate xml;
 #[macro_use]
 extern crate lazy_static;
-extern crate crypto;
+extern crate openssl;
 extern crate encoding;
 extern crate hyper;
 extern crate url;
@@ -19,8 +19,7 @@ use encoding::all::WINDOWS_1252;
 use hyper::Client;
 use hyper::header::Connection;
 use url::Url;
-
-mod cryptaes;
+use openssl::crypto::symm;
 
 const SYNC_KEY_ENCODED: &'static str = "4878b22e76379b55c962b18ddbc188d82299f8f52e3e698d0faf29a40ed64b21";
 const SYNC_IV: &'static [u8] = b"WA7hap7AGUkevuth";
@@ -112,7 +111,6 @@ fn write_lines(filename: String, lines: Vec<SubtitleLine>) {
 }
 
 fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
-    //let mut parser = EventReader::new(reader);
     let mut lines: Vec<SubtitleLine> = vec![];
     while let Ok(event) = parser.next() {
         match event {
@@ -146,7 +144,7 @@ fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
                             }
                             XmlEvent::Characters(content) => {
                                 let encrypted_string = content.from_hex().unwrap();
-                                let value = cryptaes::decrypt256(&encrypted_string, &*SYNC_KEY, SYNC_IV).unwrap();
+                                let value: Vec<u8> = symm::decrypt(symm::Type::AES_256_CBC, &*SYNC_KEY, SYNC_IV, &encrypted_string);
                                 let decrypted_string = std::str::from_utf8(&value).unwrap();
                                 let encoded_string = WINDOWS_1252.encode(&decrypted_string, EncoderTrap::Ignore).unwrap();
                                 let decoded_string = std::str::from_utf8(&encoded_string).unwrap();

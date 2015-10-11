@@ -7,7 +7,7 @@ authors = ["Musee Ullah <lae@lae.is>"]
 rustc-serialize = '*'
 lazy_static = '*'
 xml-rs = '*'
-rust-crypto = { git = "https://github.com/andreasots/rust-crypto.git", branch = "volatile-asm" }
+openssl = '*'
 encoding = '*'
 hyper = '*'
 url = { git = "https://github.com/servo/rust-url" }
