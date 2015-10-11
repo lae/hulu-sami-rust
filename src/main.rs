@@ -7,10 +7,11 @@ extern crate encoding;
 extern crate hyper;
 extern crate url;
 
+use std::error::Error;
 use std::env;
 use std::process;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write, Cursor};
 
 use xml::reader::{EventReader, XmlEvent};
 use serialize::hex::FromHex;
@@ -41,6 +42,35 @@ struct SubtitleLine {
     text: String
 }
 
+fn parser_from_http(url: &str) -> Result<(String, EventReader<Box<Read>>), Box<Error>> {
+    let filename =
+        try!(Url::parse(url))
+        .path()
+        .and_then(|path| path.last())
+        .map_or(
+            "whatever.srt".into(),
+            |last| format!("{}.srt", last)
+        );
+
+    let mut res = try!(Client::new().get(url).header(Connection::close()).send());
+    let mut body = Vec::new();
+
+    try!(res.read_to_end(&mut body));
+
+    Ok((filename, EventReader::new(Box::new(Cursor::new(body)))))
+}
+
+fn parser_from_file(path: &str) -> Result<(String, EventReader<Box<Read>>), Box<Error>> {
+    let file = try!(File::open(path));
+    let filename = if path.ends_with(".xml") {
+        path.replace(".xml", ".srt")
+    } else {
+        format!("{}.srt", path)
+    };
+
+    Ok((filename, EventReader::new(Box::new(BufReader::new(file)))))
+}
+
 fn main() {
     let args = env::args().collect::<Vec<String>>();
     if args.len() != 2 {
@@ -48,46 +78,19 @@ fn main() {
         process::exit(64);
     }
 
-    let hulu_xml = &args[1];
-    if hulu_xml.starts_with("http://") || hulu_xml.starts_with("https://") {
-        let filename = match Url::parse(hulu_xml) {
-            Ok(url) => {
-                url.path()
-                .and_then(|path| path.last())
-                .map_or(
-                    "whatever.srt".into(),
-                    |last| format!("{}.srt", last)
-                )
-            }
-            Err(err) => {
-                println!("Couldn't parse URL: {:?}", err);
-                process::exit(1);
-            }
-        };
-
-        let client = Client::new();
-        let mut res = client.get(hulu_xml).header(Connection::close()).send().unwrap();
-        let mut body = String::new();
-        res.read_to_string(&mut body).unwrap();
-        let mut parser = EventReader::from_str(&body);
-        write_lines(filename, collect_lines(&mut parser));
+    let path = &args[1];
+    let result = if path.starts_with("http://") || path.starts_with("https://") {
+        parser_from_http(path)
     } else {
-        let file = match File::open(hulu_xml) {
-            Ok(file) => BufReader::new(file),
-            Err(err) => {
-                println!("Failed to open {}: {}", hulu_xml, err.to_string());
-                process::exit(1);
-            }
-        };
+        parser_from_file(path)
+    };
 
-        let hulu_srt = if hulu_xml.ends_with(".xml") {
-            hulu_xml.replace(".xml", ".srt")
-        } else {
-            format!("{}.srt", hulu_xml)
-        };
-
-        let mut parser = EventReader::new(file);
-        write_lines(hulu_srt, collect_lines(&mut parser));
+    match result {
+        Ok((filename, mut parser)) => write_lines(filename, collect_lines(&mut parser)),
+        Err(err) => {
+            println!("Failed to open {}: {:?}", path, err);
+            process::exit(1);
+        }
     }
 }
 
