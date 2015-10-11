@@ -86,32 +86,33 @@ fn main() {
     };
 
     match result {
-        Ok((filename, mut parser)) => write_lines(filename, collect_lines(&mut parser)),
+        Ok((filename, mut parser)) => write_lines(&filename, &collect_lines(&mut parser)).unwrap(),
         Err(err) => {
-            println!("Failed to open {}: {:?}", path, err);
+            println!("Failed to read {}: {:?}", path, err);
             process::exit(1);
         }
     }
 }
 
-fn write_lines(filename: String, lines: Vec<SubtitleLine>) {
-    let mut output_file = match File::create(&filename) {
-        Ok(file) => BufWriter::new(file),
-        Err(err) => {
-            println!("Failed to open {} for writing: {}", filename, err.to_string());
-            process::exit(1);
-        }
-    };
+fn write_lines(filename: &str, lines: &[SubtitleLine]) -> Result<(), Box<Error>> {
+    let output_file = try!(File::create(filename));
+    let mut output_file = BufWriter::new(output_file);
+
     println!("Writing SRT to {}", filename);
+
     for (i, line) in lines.iter().enumerate() {
-        let srt_line = format!("{}\n{} --> {}\n{}\n\n",
-                                i+1,
-                                srtime(line.start),
-                                srtime(line.end),
-                                line.text);
-        output_file.write(srt_line.as_bytes()).unwrap();
+        let srt_line = format!(
+            "{}\n{} --> {}\n{}\n\n",
+            i + 1,
+            srtime(line.start),
+            srtime(line.end),
+            line.text
+        );
+        try!(output_file.write(srt_line.as_bytes()));
     }
-    output_file.flush().unwrap();
+
+    try!(output_file.flush());
+    Ok(()) // whatever
 }
 
 fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
