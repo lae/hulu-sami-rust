@@ -47,6 +47,7 @@ fn main() {
         println!("{} [xml file (local or http)]", &args[0]);
         process::exit(64);
     }
+
     let hulu_xml = &args[1];
     if hulu_xml.starts_with("http://") || hulu_xml.starts_with("https://") {
         let filename = match Url::parse(hulu_xml) {
@@ -63,6 +64,7 @@ fn main() {
                 process::exit(1);
             }
         };
+
         let client = Client::new();
         let mut res = client.get(hulu_xml).header(Connection::close()).send().unwrap();
         let mut body = String::new();
@@ -77,10 +79,13 @@ fn main() {
                 process::exit(1);
             }
         };
-        let hulu_srt = match hulu_xml.ends_with(".xml") {
-            true => hulu_xml.replace(".xml", ".srt"),
-            false => format!("{}.srt", hulu_xml)
+
+        let hulu_srt = if hulu_xml.ends_with(".xml") {
+            hulu_xml.replace(".xml", ".srt")
+        } else {
+            format!("{}.srt", hulu_xml)
         };
+
         let mut parser = EventReader::new(file);
         write_lines(hulu_srt, collect_lines(&mut parser));
     }
