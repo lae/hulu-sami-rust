@@ -115,57 +115,71 @@ fn write_lines(filename: &str, lines: &[SubtitleLine]) -> Result<(), Box<Error>>
     Ok(()) // whatever
 }
 
+fn process_text(text: &str) -> Result<String, Box<Error>> {
+    let encrypted_string = try!(text.from_hex());
+    let value = try!(cryptaes::decrypt256(&encrypted_string, &*SYNC_KEY, SYNC_IV));
+    let decrypted_string = try!(std::str::from_utf8(&value));
+
+    let encoded_string = WINDOWS_1252.encode(&decrypted_string, EncoderTrap::Ignore).unwrap_or(Vec::new());
+    let decoded_string = try!(std::str::from_utf8(&encoded_string));
+
+    Ok(decoded_string.replace("<P>","").replace("</P>","").replace("<BR/>", "\n"))
+}
+
 fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
-    //let mut parser = EventReader::new(reader);
-    let mut lines: Vec<SubtitleLine> = vec![];
+    let mut lines = Vec::<SubtitleLine>::new();
+
+    #[derive(Default, Debug)]
+    struct State {
+        in_sync: bool,
+        start: Option<usize>,
+        text: Option<String>
+    }
+
+    let mut parse_state: State = Default::default();
+
     while let Ok(event) = parser.next() {
         match event {
             XmlEvent::StartElement { name, attributes, .. } => {
                 if name.local_name == "SYNC" {
-                    let mut line = SubtitleLine { start: 0, end: 0, text: String::new() };
+                    parse_state.in_sync = true;
+
                     for attribute in attributes {
                         if attribute.name.local_name == "start" {
-                            line.start = match attribute.value.parse() {
-                                Ok(time) => time,
-                                Err(_) => 0
-                            }
-                        }
-                    }
-                    while let Ok(sync_event) = parser.next() {
-                        match sync_event {
-                            XmlEvent::EndElement { .. } => {
-                                if lines.len() > 0 {
-                                    let mut last_line: &mut SubtitleLine = match lines.last_mut() {
-                                        Some(l) => l,
-                                        None => break
-                                    };
-                                    if last_line.end == 0 {
-                                        last_line.end = line.start;
-                                    }
-                                }
-                                if line.text != "" {
-                                    lines.push(line)
-                                } 
-                                break
-                            }
-                            XmlEvent::Characters(content) => {
-                                let encrypted_string = content.from_hex().unwrap();
-                                let value = cryptaes::decrypt256(&encrypted_string, &*SYNC_KEY, SYNC_IV).unwrap();
-                                let decrypted_string = std::str::from_utf8(&value).unwrap();
-                                let encoded_string = WINDOWS_1252.encode(&decrypted_string, EncoderTrap::Ignore).unwrap();
-                                let decoded_string = std::str::from_utf8(&encoded_string).unwrap();
-                                let cleaned_string = decoded_string.replace("<P>","").replace("</P>","").replace("<BR/>", "\n");
-                                line.text = cleaned_string.to_owned();
-                            }
-                            _ => break
+                            parse_state.start = attribute.value.parse().ok();
+                            break;
                         }
                     }
                 }
+            },
+
+            XmlEvent::Characters(content) => {
+                if let Ok(text) = process_text(&content) {
+                    if text != "" {
+                        parse_state.text = Some(text)
+                    }
+                }
             }
+
+            XmlEvent::EndElement { .. } => {
+                if let State { in_sync: true, start: Some(start), text: Some(text) } = parse_state {
+                    if let Some(line) = lines.last_mut() {
+                        if line.end == 0 {
+                            line.end = start
+                        }
+                    };
+
+                    lines.push(SubtitleLine { start: start, end: 0, text: text });
+                }
+
+                parse_state = Default::default();
+            },
+
             XmlEvent::EndDocument => break,
-            _ => { }
+            _ => ()
         }
     }
+
     lines
 }
 
