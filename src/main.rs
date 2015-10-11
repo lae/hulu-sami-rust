@@ -162,14 +162,16 @@ fn collect_lines<T: Read>(parser: &mut EventReader<T>) -> Vec<SubtitleLine> {
             }
 
             XmlEvent::EndElement { .. } => {
-                if let State { in_sync: true, start: Some(start), text: Some(text) } = parse_state {
+                if let State { in_sync: true, start: Some(start), text } = parse_state {
                     if let Some(line) = lines.last_mut() {
                         if line.end == 0 {
                             line.end = start
                         }
                     };
 
-                    lines.push(SubtitleLine { start: start, end: 0, text: text });
+                    if text.is_some() {
+                        lines.push(SubtitleLine { start: start, end: 0, text: text.unwrap() });
+                    }
                 }
 
                 parse_state = Default::default();
